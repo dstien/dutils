@@ -11,18 +11,21 @@ One pixel correspond to one stitch. Stitches are non-square (3:2), so scale your
 
 Install
 -------
+```
 go install github.com/dstien/dutils/vgknit
+```
 
 Use
 ---
+```
 vgknit pattern.png motif.png | xclip
+```
 
 Go to http://magnusgenseren.vg.no/ and paste result in your browser's JS console.
 
 License
 -------
-CC0 - Public domain
-http://creativecommons.org/publicdomain/zero/1.0/
+[CC0 - Public domain](http://creativecommons.org/publicdomain/zero/1.0/)
 
 Contact
 -------
