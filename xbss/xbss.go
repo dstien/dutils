@@ -138,7 +138,7 @@ func screenshot(host string) {
 	if err != nil {
 		log.Fatal("Couldn't read screenshot status: ", err)
 	} else if status != ResponseBinary {
-		log.Fatal("Got unexpected screenshot response: ", banner)
+		log.Fatal("Got unexpected screenshot status: ", status)
 	}
 
 	header, err := reader.ReadString('\n')
