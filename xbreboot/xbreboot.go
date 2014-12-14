@@ -7,15 +7,18 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 )
 
 const (
-	DebugBiosPort     = 731
-	ResponseOK        = "200- OK\r\n"
-	ResponseBanner    = "201- connected\r\n"
-	CommandRebootCold = "reboot\r\n"
-	CommandRebootWarm = "reboot warm\r\n"
-	CommandQuit       = "bye\r\n"
+	DebugBiosPort  = 731
+	ResponseOk     = "200- OK"
+	ResponseQuit   = "200- bye"
+	ResponseBanner = "201- connected"
+	CommandReboot  = "reboot"
+	ArgumentWarm   = " warm"
+	CommandQuit    = "bye"
+	MessageSuffix  = "\r\n"
 )
 
 var (
@@ -23,68 +26,86 @@ var (
 	cold    bool
 )
 
-func reboot(host string) {
+func connect(host string) (conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, err error) {
 	socket := fmt.Sprintf("%s:%d", host, DebugBiosPort)
 
 	if verbose {
-		log.Print("Connecting to ", socket)
+		log.Printf("Connecting to %s", socket)
 	}
 
-	conn, err := net.Dial("tcp4", socket)
+	conn, err = net.Dial("tcp4", socket)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
+	reader = bufio.NewReader(conn)
+	writer = bufio.NewWriter(conn)
+
+	_, err = readResponse(reader, ResponseBanner)
+	if err != nil {
+		defer conn.Close()
+		return nil, nil, nil, fmt.Errorf("Error reading protocol banner: %s", err)
+	}
+
+	return conn, reader, writer, err
+}
+
+func readResponse(reader *bufio.Reader, expected string) (response string, err error) {
+	response, err = reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	if strings.HasSuffix(response, MessageSuffix) {
+		response = response[:len(response)-len(MessageSuffix)]
+	}
+
+	if verbose {
+		log.Printf("Received response \"%s\"", response)
+	}
+
+	if expected != "" && response != expected {
+		err = fmt.Errorf("Got \"%s\", expected \"%s\".", response, expected)
+	}
+
+	return response, err
+}
+
+func sendCommand(writer *bufio.Writer, reader *bufio.Reader, command, expected string) (response string, err error) {
+	if verbose {
+		log.Printf("Sending command \"%s\"", command)
+	}
+
+	_, err = writer.WriteString(command + MessageSuffix)
+	if err != nil {
+		return "", err
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		return "", err
+	}
+
+	return readResponse(reader, expected)
+}
+
+func reboot(host string) {
+	conn, reader, writer, err := connect(host)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
-
-	banner, err := reader.ReadString('\n')
-
-	if err != nil {
-		log.Fatal("Couldn't read banner: ", err)
-	}
-
 	defer conn.Close()
 
-	if banner != ResponseBanner {
-		log.Fatal("Got unexpected protocol banner: ", banner)
+	command := CommandReboot
+
+	if !cold {
+		command += ArgumentWarm
 	}
 
-	var command string
-
-	if cold {
-		command = CommandRebootCold
-	} else {
-		command = CommandRebootWarm
-	}
-
-	if verbose {
-		log.Print("Connected. Sending command: ", command)
-	}
-
-	_, err = writer.WriteString(command)
-	writer.Flush()
-
+	_, err = sendCommand(writer, reader, command, ResponseOk)
 	if err != nil {
-		log.Fatal("Couldn't send reboot command: ", err)
-	}
-
-	status, err := reader.ReadString('\n')
-
-	if err != nil {
-		log.Fatal("Couldn't read reboot response: ", err)
-	} else if status != ResponseOK {
-		log.Fatal("Got unexpected reboot response: ", status)
-	} else if verbose {
-		log.Fatal("Reboot command accepted. Disconnecting.")
-	}
-
-	_, err = writer.WriteString(CommandQuit)
-	writer.Flush()
-
-	if err != nil {
-		log.Fatal("Farewell failed: ", err)
+		log.Fatalf("Command \"%s\" failed: %s", command, err)
 	}
 }
 
