@@ -2,26 +2,30 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
 	FilenameFormat    = "xbss-2006-01-02_15-04-05.000.png"
 	DebugBiosPort     = 731
-	ResponseOK        = "200- OK\r\n"
-	ResponseQuit      = "200- bye\r\n"
-	ResponseBanner    = "201- connected\r\n"
-	ResponseBinary    = "203- binary response follows\r\n"
-	CommandScreenshot = "screenshot\r\n"
-	CommandQuit       = "bye\r\n"
-	HeaderScreenshot  = "pitch=0x%x width=0x%x height=0x%x format=0x%x, framebuffersize=0x%x\r\n"
+	ResponseOk        = "200- OK"
+	ResponseQuit      = "200- bye"
+	ResponseBanner    = "201- connected"
+	ResponseBinary    = "203- binary response follows"
+	CommandScreenshot = "screenshot"
+	CommandQuit       = "bye"
+	HeaderScreenshot  = "pitch=0x%x width=0x%x height=0x%x format=0x%x, framebuffersize=0x%x"
+	MessageSuffix     = "\r\n"
 	FormatBGRA        = 18
 )
 
@@ -31,40 +35,9 @@ var (
 )
 
 func bgra2rgba(data []byte, pitch, width, height int) {
-	for i := 0; i < pitch * height; i += pitch / width {
-		data[i], data[i + 2] = data[i + 2], data[i]
+	for i := 0; i < pitch*height; i += pitch / width {
+		data[i], data[i+2] = data[i+2], data[i]
 	}
-}
-
-func readImage(reader *bufio.Reader, length int) []byte {
-	data := make([]byte, length)
-	totalread := 0
-
-	if verbose {
-		log.Print("Reading image data")
-	}
-
-	for totalread < length {
-		tmp := make([]byte, length)
-		read, err := reader.Read(tmp)
-		if read > 0 && err != nil {
-			log.Fatal("Reading image data failed: ", err)
-		}
-
-		if verbose {
-			fmt.Fprintf(os.Stderr, ".")
-		}
-
-		copy(data[totalread:], tmp)
-
-		totalread += read
-	}
-
-	if verbose {
-		fmt.Fprintf(os.Stderr, "\n")
-	}
-
-	return data
 }
 
 func writeImage(data []byte, pitch, width, height int) {
@@ -94,55 +67,83 @@ func writeImage(data []byte, pitch, width, height int) {
 	fmt.Println(filename)
 }
 
-func screenshot(host string) {
+func connect(host string) (conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, err error) {
 	socket := fmt.Sprintf("%s:%d", host, DebugBiosPort)
 
 	if verbose {
-		log.Print("Connecting to ", socket)
+		log.Printf("Connecting to %s", socket)
 	}
 
-	conn, err := net.Dial("tcp4", socket)
+	conn, err = net.Dial("tcp4", socket)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
+	reader = bufio.NewReader(conn)
+	writer = bufio.NewWriter(conn)
+
+	_, err = readResponse(reader, ResponseBanner)
+	if err != nil {
+		defer conn.Close()
+		return nil, nil, nil, fmt.Errorf("Error reading protocol banner: %s", err)
+	}
+
+	return conn, reader, writer, err
+}
+
+func readResponse(reader *bufio.Reader, expected string) (response string, err error) {
+	response, err = reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	if strings.HasSuffix(response, MessageSuffix) {
+		response = response[:len(response)-len(MessageSuffix)]
+	}
+
+	if verbose {
+		log.Printf("Received response \"%s\"", response)
+	}
+
+	if expected != "" && response != expected {
+		err = fmt.Errorf("Got \"%s\", expected \"%s\".", response, expected)
+	}
+
+	return response, err
+}
+
+func sendCommand(writer *bufio.Writer, reader *bufio.Reader, command, expected string) (response string, err error) {
+	if verbose {
+		log.Printf("Sending command \"%s\"", command)
+	}
+
+	_, err = writer.WriteString(command + MessageSuffix)
+	if err != nil {
+		return "", err
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		return "", err
+	}
+
+	return readResponse(reader, expected)
+}
+
+func screenshot(host string) {
+	conn, reader, writer, err := connect(host)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
-
-	banner, err := reader.ReadString('\n')
-
-	if err != nil {
-		log.Fatal("Couldn't read banner: ", err)
-	}
-
 	defer conn.Close()
-	
-	if banner != ResponseBanner {
-		log.Fatal("Got unexpected protocol banner: ", banner)
-	}
 
-	if verbose {
-		log.Print("Connected. Sending screenshot command.")
-	}
-
-	_, err = writer.WriteString(CommandScreenshot)
-	writer.Flush()
-
+	_, err = sendCommand(writer, reader, CommandScreenshot, ResponseBinary)
 	if err != nil {
-		log.Fatal("Couldn't send screenshot command: ", err)
+		log.Fatalf("Command \"%s\" failed: %s", CommandScreenshot, err)
 	}
 
-	status, err := reader.ReadString('\n')
-
-	if err != nil {
-		log.Fatal("Couldn't read screenshot status: ", err)
-	} else if status != ResponseBinary {
-		log.Fatal("Got unexpected screenshot status: ", status)
-	}
-
-	header, err := reader.ReadString('\n')
-
+	header, err := readResponse(reader, "")
 	if err != nil {
 		log.Fatal("Couldn't read screenshot header: ", err)
 	}
@@ -158,13 +159,17 @@ func screenshot(host string) {
 		log.Fatal("Invalid image format")
 	}
 
-	data := readImage(reader, fbsize)
+	buf := bytes.NewBuffer(nil)
+	buf.Grow(fbsize)
 
-	writeImage(data, pitch, width, height)
+	_, err = io.CopyN(buf, reader, int64(fbsize))
+	if err != nil {
+		log.Fatal("Reading image data failed: ", err)
+	}
 
-	_, err = writer.WriteString(CommandQuit)
-	writer.Flush()
+	writeImage(buf.Bytes(), pitch, width, height)
 
+	_, err = sendCommand(writer, reader, CommandQuit, ResponseQuit)
 	if err != nil {
 		log.Fatal("Farewell failed: ", err)
 	}
