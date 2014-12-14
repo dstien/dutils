@@ -20,7 +20,7 @@ const (
 
 var (
 	verbose bool
-	warm    bool
+	cold    bool
 )
 
 func reboot(host string) {
@@ -53,10 +53,10 @@ func reboot(host string) {
 
 	var command string
 
-	if warm {
-		command = CommandRebootWarm
-	} else {
+	if cold {
 		command = CommandRebootCold
+	} else {
+		command = CommandRebootWarm
 	}
 
 	if verbose {
@@ -89,14 +89,14 @@ func reboot(host string) {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [-warm] [-v] host\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s [-cold] [-v] host\n", os.Args[0])
 	flag.PrintDefaults()
 	os.Exit(2)
 }
 
 func init() {
 	flag.BoolVar(&verbose, "v", false, "verbose")
-	flag.BoolVar(&warm, "warm", false, "don't reload BIOS")
+	flag.BoolVar(&cold, "cold", false, "reload BIOS")
 	flag.Usage = usage
 }
 
